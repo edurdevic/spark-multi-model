@@ -2,7 +2,7 @@ from pyspark.sql import functions as F
 from functools import partial
 from pyspark.sql.window import Window
 import random
-import pandas
+import pandas as pd
 import dill
 import json
 
@@ -39,7 +39,7 @@ def apply_grouped_training(f, model_name, group_key, pdf):
         except Exception as e:
             trace = traceback.format_exc()
             # End run and get status
-            result = pandas.DataFrame(data=[[run.info.run_id, json.dumps(group_key), None, None, None, trace]], columns=grouped_result_cols)
+            result = pd.DataFrame(data=[[run.info.run_id, json.dumps(group_key), None, None, None, trace]], columns=grouped_result_cols)
 
     run_id = run.info.run_id
     saved_run = mlflow.get_run(run_id)
@@ -47,7 +47,7 @@ def apply_grouped_training(f, model_name, group_key, pdf):
     info = json.dumps(vars(saved_run.info))
 
     if (result is None):
-        result = pandas.DataFrame(data=[[run_id, json.dumps(group_key), data, info, f'runs:/{run_id}/{model_name}', None]], columns=grouped_result_cols)
+        result = pd.DataFrame(data=[[run_id, json.dumps(group_key), data, info, f'runs:/{run_id}/{model_name}', None]], columns=grouped_result_cols)
     
     return result
   

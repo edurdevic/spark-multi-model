@@ -19,7 +19,7 @@ dbutils.widgets.text("workflow_run_id", "1")
 from pyspark.sql import functions as F
 from deltamodels import dm
 import random
-import pandas
+import pandas as pd
 
 # COMMAND ----------
 
@@ -72,7 +72,7 @@ display(df)
 from lightgbm import LGBMRegressor
 import mlflow
 
-def my_fun(pdf: pandas.DataFrame, run: mlflow.ActiveRun):
+def my_fun(pdf: pd.DataFrame, run: mlflow.ActiveRun):
 
     #### YOUR CODE #####
 
@@ -107,14 +107,13 @@ res = (df
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC SELECT *
-# MAGIC FROM ${var.catalog}
+# DBTITLE 1,Spark SQL Display Query
+spark.sql(f"SELECT * FROM {conf.catalog}.{conf.schema}.{conf.model_table}").display()
 
 # COMMAND ----------
 
-# DBTITLE 1,Spark SQL Display Query
-spark.sql(f"SELECT * FROM {conf.catalog}.{conf.schema}.{conf.model_table}").display()
+# MAGIC %md
+# MAGIC ### Count of errors per run
 
 # COMMAND ----------
 
@@ -125,6 +124,11 @@ spark.sql(f"""
           GROUP BY 1, 2
           ORDER BY 1, 2
           """).display()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Details of a specific group
 
 # COMMAND ----------
 
