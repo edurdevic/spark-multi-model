@@ -103,6 +103,7 @@ from databricks.feature_engineering import FeatureLookup
 feature_lookups = [
     FeatureLookup(
       table_name=f'{conf.catalog}.{conf.schema}.{conf.feature_table}',
+      # 'group_key' is a feature because it is used to switch between models
       feature_names=['group_key', 'a', 'b', 'c'],
       lookup_key=["ent_code", "farm_code"],
       timestamp_lookup_key=["ts"]
@@ -149,7 +150,7 @@ def my_fun(pdf: pd.DataFrame, run: mlflow.ActiveRun):
     #### END YOUR CODE #####
 
 
-res = (df
+res = (training_set.load_df()
        .groupby("group_key")
        .applyInPandas(dm.grouped_training(f=my_fun, model_name=conf.model_name), schema=dm.grouped_result_schema)
        .withColumn("ts", F.now())
@@ -229,8 +230,9 @@ import dill
 
 class GroupedModel(mlflow.pyfunc.PythonModel):
 
-    def __init__(self, best_models):
+    def __init__(self, best_models, features):
         self.models = {}
+        self.features = features
         for index, row in best_models.iterrows():
             print(f"Loading model for '{row['group_key']}' from '{row['model_artifact_url']}'")
         
@@ -242,9 +244,15 @@ class GroupedModel(mlflow.pyfunc.PythonModel):
 
         dfs = []
         for group_key, df in dataframe.groupby("group_key"):
-            result = self.models[group_key].predict(df[["a", "b", "c"]])
-            
-            dfs.append(pd.DataFrame(result, columns=["prediction"]))
+            try:
+                result = pd.DataFrame(self.models[group_key].predict(df[self.features]), columns=["prediction"])
+            except:
+                # TODO: Handle errors better
+                print(f"Error for group_key '{group_key}'")
+                result = pd.DataFrame([None], columns=["prediction"])
+        
+            dfs.append(result)
+
         return pd.concat(dfs)
 
 
@@ -259,13 +267,10 @@ class GroupedModel(mlflow.pyfunc.PythonModel):
 
 mlflow.set_registry_uri('databricks-uc')
 
-with mlflow.start_run():
-
-  # Load features to trace FeatureStore dependency
-  training_df = training_set.load_df()
+with mlflow.start_run() as run:
 
   # Package multiple models into a single GroupedModel artifact
-  model = GroupedModel(best_models.toPandas())
+  model = GroupedModel(best_models.toPandas(), features=["a", "b", "c"])
 
   fe.log_model(
     model=model,
@@ -285,9 +290,8 @@ with mlflow.start_run():
 
 fe = FeatureEngineeringClient()
 
-# batch_df has columns ‘customer_id’ and ‘product_id’
 predictions = fe.score_batch(
-    model_uri="models:/temp.erni.deltamodels_grouped_model/8",
+    model_uri="models:/temp.erni.deltamodels_grouped_model/15",
     df=df.select("farm_code", "ent_code", "ts")
 )
 
