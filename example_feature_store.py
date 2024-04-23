@@ -1,9 +1,4 @@
 # Databricks notebook source
-# dbutils.widgets.removeAll()
-dbutils.widgets.text("workflow_run_id", "1")
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC # Multi model training and inference
 # MAGIC
@@ -18,19 +13,18 @@ dbutils.widgets.text("workflow_run_id", "1")
 # DBTITLE 1,Python Data Processing Libraries
 from pyspark.sql import functions as F
 from deltamodels import dm
+from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup
 import random
 import pandas as pd
 
 # COMMAND ----------
 
 # DBTITLE 1,Date Range Widget Getter
-workflow_run_id = dbutils.widgets.get("workflow_run_id")
 
 class Conf:
     catalog = "temp"
     schema = "erni"
     model_table = "delta_models_v4"
-    model_name = "model"
     feature_table = "windfarm_features_v2"
 
 conf = Conf()
@@ -74,12 +68,9 @@ display(df)
 
 # COMMAND ----------
 
-from databricks.feature_engineering import FeatureEngineeringClient
-
 fe = FeatureEngineeringClient()
 
-# COMMAND ----------
-
+# Creating the feature engineering table
 feature_table = fe.create_table(
   name=f'{conf.catalog}.{conf.schema}.{conf.feature_table}',
   primary_keys=["ent_code", "farm_code", "ts"],
@@ -94,11 +85,6 @@ feature_table = fe.create_table(
 # MAGIC ## Feature lookup and training
 
 # COMMAND ----------
-
-# Train model
-import mlflow
-from sklearn import linear_model
-from databricks.feature_engineering import FeatureLookup
 
 feature_lookups = [
     FeatureLookup(
@@ -134,6 +120,7 @@ training_set.load_df().display()
 from lightgbm import LGBMRegressor
 import mlflow
 
+
 def my_fun(pdf: pd.DataFrame, run: mlflow.ActiveRun):
 
     #### YOUR CODE #####
@@ -145,22 +132,23 @@ def my_fun(pdf: pd.DataFrame, run: mlflow.ActiveRun):
     model = regressor.fit(pdf[["a", "b", "c"]], pdf["target"])
     
     mlflow.log_metric("rmse", random.random())
-    mlflow.lightgbm.log_model(model, conf.model_name)
+    mlflow.lightgbm.log_model(model, "model")
     
     #### END YOUR CODE #####
 
 
-res = (training_set.load_df()
-       .groupby("group_key")
-       .applyInPandas(dm.grouped_training(f=my_fun, model_name=conf.model_name), schema=dm.grouped_result_schema)
-       .withColumn("ts", F.now())
-       .withColumn("workflow_run_id", F.lit(workflow_run_id))
-    ) 
-                                           
-(res.write
-       .mode("append")
-       .saveAsTable(f"{conf.catalog}.{conf.schema}.{conf.model_table}")
-)
+with mlflow.start_run() as parent_run:
+    res = (training_set.load_df()
+        .groupby("group_key")
+        .applyInPandas(
+            dm.grouped_training(f=my_fun, parent_run_id=parent_run.info.run_id), 
+            schema=dm.grouped_result_schema)
+        .withColumn("ts", F.now()) # Adding a timestamp column to track the model creation datetime
+        )
+    (res.write
+        .mode("append")
+        .saveAsTable(f"{conf.catalog}.{conf.schema}.{conf.model_table}")
+    )
 
 # COMMAND ----------
 
@@ -181,7 +169,7 @@ spark.sql(f"SELECT * FROM {conf.catalog}.{conf.schema}.{conf.model_table}").disp
 
 # DBTITLE 1,Workflow Exception Model Count Query
 spark.sql(f"""
-          SELECT ts, workflow_run_id, count(exception), count(model_artifact_url)
+          SELECT ts, count(exception), count(model_artifact_url)
           FROM {conf.catalog}.{conf.schema}.{conf.model_table}
           GROUP BY 1, 2
           ORDER BY 1, 2
@@ -291,7 +279,7 @@ with mlflow.start_run() as run:
 fe = FeatureEngineeringClient()
 
 predictions = fe.score_batch(
-    model_uri="models:/temp.erni.deltamodels_grouped_model/15",
+    model_uri="models:/temp.erni.deltamodels_grouped_model/16",
     df=df.select("farm_code", "ent_code", "ts")
 )
 

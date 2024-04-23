@@ -22,8 +22,8 @@ def get_best_model(df, metric: str):
     )
     return result
   
-def grouped_training(f, model_name):
-    return partial(apply_grouped_training, f, model_name)
+def grouped_training(f, parent_run_id):
+    return partial(apply_grouped_training, f, parent_run_id)
 
 
 def get_key_value(group_key):
@@ -33,21 +33,24 @@ def get_key_value(group_key):
         return json.dumps(group_key)
     
 
-def apply_grouped_training(f, model_name, group_key, pdf):
+def apply_grouped_training(f, parent_run_id, group_key, pdf):
     import traceback
     import mlflow
 
     # mlflow.autolog(exclusive=True, log_models=False)
     result = None
 
-    with mlflow.start_run() as run:
-        try:  
-            f(pdf, run)
-        
-        except Exception as e:
-            trace = traceback.format_exc()
-            # End run and get status
-            result = pd.DataFrame(data=[[run.info.run_id, get_key_value(group_key), None, None, None, trace]], columns=grouped_result_cols)
+    with mlflow.start_run(run_id=parent_run_id) as parent_run:
+        with mlflow.start_run(run_name=f"group {group_key}", nested=True) as run:
+            try:  
+                mlflow.log_param("group_key", group_key)
+                mlflow.log_param("nested_run", "true")
+                f(pdf, run)
+            
+            except Exception as e:
+                trace = traceback.format_exc()
+                # End run and get status
+                result = pd.DataFrame(data=[[run.info.run_id, get_key_value(group_key), None, None, None, trace]], columns=grouped_result_cols)
 
     run_id = run.info.run_id
     saved_run = mlflow.get_run(run_id)
@@ -55,7 +58,7 @@ def apply_grouped_training(f, model_name, group_key, pdf):
     info = json.dumps(vars(saved_run.info))
 
     if (result is None):
-        result = pd.DataFrame(data=[[run_id, get_key_value(group_key), data, info, f'runs:/{run_id}/{model_name}', None]], columns=grouped_result_cols)
+        result = pd.DataFrame(data=[[run_id, get_key_value(group_key), data, info, f'runs:/{run_id}/model', None]], columns=grouped_result_cols)
     
     return result
   
