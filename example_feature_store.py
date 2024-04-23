@@ -157,7 +157,18 @@ with mlflow.start_run() as parent_run:
 
 # COMMAND ----------
 
+# Load directly from MLflow experiment
+df = spark.read.format("mlflow-experiment").load()
+df.display()
+
+# COMMAND ----------
+
+df.groupBy("params.group_key").count().display()
+
+# COMMAND ----------
+
 # DBTITLE 1,Spark SQL Display Query
+# Read results from the delta table
 spark.sql(f"SELECT * FROM {conf.catalog}.{conf.schema}.{conf.model_table}").display()
 
 # COMMAND ----------
@@ -212,46 +223,7 @@ best_models.display()
 
 # COMMAND ----------
 
-import mlflow
-import dill
-
-
-class GroupedModel(mlflow.pyfunc.PythonModel):
-
-    def __init__(self, best_models, features):
-        self.models = {}
-        self.features = features
-        for index, row in best_models.iterrows():
-            print(f"Loading model for '{row['group_key']}' from '{row['model_artifact_url']}'")
-        
-            model = mlflow.pyfunc.load_model(row['model_artifact_url'])
-            self.models[row['group_key']] = model
-
-    
-    def predict(self, context, dataframe: pd.DataFrame):
-
-        dfs = []
-        for group_key, df in dataframe.groupby("group_key"):
-            try:
-                result = pd.DataFrame(self.models[group_key].predict(df[self.features]), columns=["prediction"])
-            except:
-                # TODO: Handle errors better
-                print(f"Error for group_key '{group_key}'")
-                result = pd.DataFrame([None], columns=["prediction"])
-        
-            dfs.append(result)
-
-        return pd.concat(dfs)
-
-
-
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Log model
-
-# COMMAND ----------
+from deltamodels.dm import GroupedModel
 
 mlflow.set_registry_uri('databricks-uc')
 
@@ -265,7 +237,8 @@ with mlflow.start_run() as run:
     artifact_path="deltamodels_grouped_model",
     flavor=mlflow.pyfunc,
     training_set=training_set,
-    registered_model_name="temp.erni.deltamodels_grouped_model"
+    registered_model_name="temp.erni.deltamodels_grouped_model",
+    infer_input_example=True
   )
 
 # COMMAND ----------

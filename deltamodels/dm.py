@@ -9,6 +9,36 @@ import json
 grouped_result_cols = ["run_id", "group_key", "data", "info", "model_artifact_url", "exception"]
 grouped_result_schema = "run_id string, group_key string, data string, info string, model_artifact_url string, exception string"
 
+class GroupedModel(mlflow.pyfunc.PythonModel):
+    """
+    A grouped model contains a dictionary of smaller models.
+    The dictionary key identifies the group key, which is used to identifi the correct model to use for inference.
+    """
+    def __init__(self, best_models, features):
+        self.models = {}
+        self.features = features
+        for index, row in best_models.iterrows():
+            print(f"Loading model for '{row['group_key']}' from '{row['model_artifact_url']}'")
+        
+            model = mlflow.pyfunc.load_model(row['model_artifact_url'])
+            self.models[row['group_key']] = model
+
+    
+    def predict(self, context, dataframe: pd.DataFrame):
+
+        dfs = []
+        for group_key, df in dataframe.groupby("group_key"):
+            try:
+                result = pd.DataFrame(self.models[group_key].predict(df[self.features]), columns=["prediction"])
+            except:
+                # TODO: Handle errors better
+                print(f"Error for group_key '{group_key}'")
+                result = pd.DataFrame([None], columns=["prediction"])
+        
+            dfs.append(result)
+
+        return pd.concat(dfs)
+    
 def get_best_model(df, metric: str):
     window_spec  = Window.partitionBy("group_key").orderBy(F.col(metric).desc())
 
@@ -22,18 +52,17 @@ def get_best_model(df, metric: str):
     )
     return result
   
-def grouped_training(f, parent_run_id):
-    return partial(apply_grouped_training, f, parent_run_id)
-
-
-def get_key_value(group_key):
+def stringify_key_value(group_key):
+    """Transforms a group key into a string representation"""
     if (type(group_key) == tuple) and (len(group_key) == 1):
         return group_key[0]
     else:
         return json.dumps(group_key)
     
+def grouped_training(f, parent_run_id):
+    return partial(_apply_grouped_training, f, parent_run_id)
 
-def apply_grouped_training(f, parent_run_id, group_key, pdf):
+def _apply_grouped_training(f, parent_run_id, group_key, pdf):
     import traceback
     import mlflow
 
@@ -45,12 +74,14 @@ def apply_grouped_training(f, parent_run_id, group_key, pdf):
             try:  
                 mlflow.log_param("group_key", group_key)
                 mlflow.log_param("nested_run", "true")
+                mlflow.log_param("logged_model_name", "model")
+                
                 f(pdf, run)
             
             except Exception as e:
                 trace = traceback.format_exc()
                 # End run and get status
-                result = pd.DataFrame(data=[[run.info.run_id, get_key_value(group_key), None, None, None, trace]], columns=grouped_result_cols)
+                result = pd.DataFrame(data=[[run.info.run_id, stringify_key_value(group_key), None, None, None, trace]], columns=grouped_result_cols)
 
     run_id = run.info.run_id
     saved_run = mlflow.get_run(run_id)
@@ -58,19 +89,19 @@ def apply_grouped_training(f, parent_run_id, group_key, pdf):
     info = json.dumps(vars(saved_run.info))
 
     if (result is None):
-        result = pd.DataFrame(data=[[run_id, get_key_value(group_key), data, info, f'runs:/{run_id}/model', None]], columns=grouped_result_cols)
+        result = pd.DataFrame(data=[[run_id, stringify_key_value(group_key), data, info, f'runs:/{run_id}/model', None]], columns=grouped_result_cols)
     
     return result
   
 
 def grouped_prediction(model, feature_cols, id_cols):
-    return partial(apply_grouped_prediction, model, feature_cols, id_cols)
+    return partial(_apply_grouped_prediction, model, feature_cols, id_cols)
 
-def apply_grouped_prediction(model, feature_cols, id_cols, group_key, pdf):
+def _apply_grouped_prediction(model, feature_cols, id_cols, group_key, pdf):
     import traceback
     import mlflow
 
-    group_key_str = get_key_value(group_key)
+    group_key_str = stringify_key_value(group_key)
     
     result = model.predict(pdf[feature_cols])
 
