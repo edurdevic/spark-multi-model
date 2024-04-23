@@ -28,6 +28,7 @@ class Conf:
     model_table = "delta_models_v1"
     grouped_model_name = "windfarm_grouped_model"
     feature_table = "windfarm_features_v1"
+    registered_model_name=f"{catalog}.{schema}.{grouped_model_name}"
 
 conf = Conf()
 
@@ -247,7 +248,7 @@ with mlflow.start_run() as run:
     artifact_path=conf.grouped_model_name,
     flavor=mlflow.pyfunc,
     training_set=training_set,
-    registered_model_name=f"{conf.catalog}.{conf.schema}.{conf.grouped_model_name}"
+    registered_model_name=f"{conf.registered_model_name}"
   )
 
 # COMMAND ----------
@@ -261,10 +262,10 @@ with mlflow.start_run() as run:
 fe = FeatureEngineeringClient()
 
 # TODO: get the latest version or use an alias (eg. `prod`)
-model_version = "1"
+model_version = dm.get_latest_model_version(conf.registered_model_name)
 
 predictions = fe.score_batch(
-    model_uri=f"models:/{conf.catalog}.{conf.schema}.{conf.grouped_model_name}/{model_version}",
+    model_uri=f"models:/{conf.registered_model_name}/{model_version}",
     df=df.select("farm_code", "ent_code", "ts")
 )
 

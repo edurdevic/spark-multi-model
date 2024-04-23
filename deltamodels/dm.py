@@ -127,3 +127,12 @@ def _apply_grouped_prediction(model, feature_cols, id_cols, group_key, pdf):
     
     return result_df
 
+def get_latest_model_version(model_name):
+    """Gets the latest version of a registered model"""
+    mlflow_client = mlflow.MlflowClient(registry_uri="databricks-uc")
+    latest_version = 1
+    for mv in mlflow_client.search_model_versions(f"name='{model_name}'"):
+        version_int = int(mv.version)
+        if version_int > latest_version:
+            latest_version = version_int
+    return latest_version
