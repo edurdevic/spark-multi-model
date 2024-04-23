@@ -263,6 +263,7 @@ fe = FeatureEngineeringClient()
 
 # TODO: get the latest version or use an alias (eg. `prod`)
 model_version = dm.get_latest_model_version(conf.registered_model_name)
+print(f"Loading model version {model_version}")
 
 predictions = fe.score_batch(
     model_uri=f"models:/{conf.registered_model_name}/{model_version}",
