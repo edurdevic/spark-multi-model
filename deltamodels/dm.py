@@ -5,6 +5,7 @@ import random
 import pandas as pd
 import dill
 import json
+import mlflow
 
 grouped_result_cols = ["run_id", "group_key", "data", "info", "model_artifact_url", "exception"]
 grouped_result_schema = "run_id string, group_key string, data string, info string, model_artifact_url string, exception string"
@@ -45,7 +46,7 @@ def get_best_model(df, metric: str):
     result = (df
               .filter(F.col("exception").isNull())
               .withColumn("metric", F.from_json(F.col("data"), schema=f"metrics struct<{metric}: float>"))
-              .select("run_id", "group_key", "ts", "workflow_run_id", "data", "model_artifact_url", f"metric.metrics.{metric}")
+              .select("run_id", "group_key", "ts", "data", "model_artifact_url", f"metric.metrics.{metric}")
               .withColumn("rank", F.rank().over(window_spec))
               .filter(F.col("rank") == 1)
               .drop("rank")
@@ -59,6 +60,21 @@ def stringify_key_value(group_key):
     else:
         return json.dumps(group_key)
     
+def train_in_parallel(df, f, parent_run, target_table):
+    assert "group_key" in df.columns, "The input dataframe must contain a column 'group_key'. The models are trained independently for each distinct group key."
+
+    res = (df
+        .groupby("group_key")
+        .applyInPandas(
+            grouped_training(f=f, parent_run_id=parent_run.info.run_id), 
+            schema=grouped_result_schema)
+        .withColumn("ts", F.now()) # Adding a timestamp column to track the model creation datetime
+        )
+    (res.write
+        .mode("append")
+        .saveAsTable(target_table)
+    )
+
 def grouped_training(f, parent_run_id):
     return partial(_apply_grouped_training, f, parent_run_id)
 

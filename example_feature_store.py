@@ -16,6 +16,7 @@ from deltamodels import dm
 from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup
 import random
 import pandas as pd
+import mlflow
 
 # COMMAND ----------
 
@@ -24,8 +25,9 @@ import pandas as pd
 class Conf:
     catalog = "temp"
     schema = "erni"
-    model_table = "delta_models_v4"
-    feature_table = "windfarm_features_v2"
+    model_table = "delta_models_v1"
+    grouped_model_name = "windfarm_grouped_model"
+    feature_table = "windfarm_features_v1"
 
 conf = Conf()
 
@@ -120,10 +122,11 @@ training_set.load_df().display()
 from lightgbm import LGBMRegressor
 import mlflow
 
-
 def my_fun(pdf: pd.DataFrame, run: mlflow.ActiveRun):
 
     #### YOUR CODE #####
+    # Define the single model training code here
+    # This will be executed for each group_key
 
     n_estimators=5
     mlflow.log_param("n_estimators", n_estimators)
@@ -137,18 +140,25 @@ def my_fun(pdf: pd.DataFrame, run: mlflow.ActiveRun):
     #### END YOUR CODE #####
 
 
+
 with mlflow.start_run() as parent_run:
-    res = (training_set.load_df()
-        .groupby("group_key")
-        .applyInPandas(
-            dm.grouped_training(f=my_fun, parent_run_id=parent_run.info.run_id), 
-            schema=dm.grouped_result_schema)
-        .withColumn("ts", F.now()) # Adding a timestamp column to track the model creation datetime
+    
+    #### YOUR CODE #####
+    # Log anything you wan to the MLflow parent run
+
+    training_df = training_set.load_df() 
+    target_table = f"{conf.catalog}.{conf.schema}.{conf.model_table}"
+
+    mlflow.log_param("target_table", target_table)
+
+    #### END YOUR CODE #####
+
+    dm.train_in_parallel(
+        df=training_df, # This dataset must contain a "group_key" column
+        f=my_fun, # This function will be executed for each group_key
+        parent_run=parent_run,
+        target_table=target_table
         )
-    (res.write
-        .mode("append")
-        .saveAsTable(f"{conf.catalog}.{conf.schema}.{conf.model_table}")
-    )
 
 # COMMAND ----------
 
@@ -158,12 +168,12 @@ with mlflow.start_run() as parent_run:
 # COMMAND ----------
 
 # Load directly from MLflow experiment
-df = spark.read.format("mlflow-experiment").load()
-df.display()
+mlflow_runs_df = spark.read.format("mlflow-experiment").load()
+mlflow_runs_df.display()
 
 # COMMAND ----------
 
-df.groupBy("params.group_key").count().display()
+mlflow_runs_df.groupBy("params.group_key").count().display()
 
 # COMMAND ----------
 
@@ -182,8 +192,8 @@ spark.sql(f"SELECT * FROM {conf.catalog}.{conf.schema}.{conf.model_table}").disp
 spark.sql(f"""
           SELECT ts, count(exception), count(model_artifact_url)
           FROM {conf.catalog}.{conf.schema}.{conf.model_table}
-          GROUP BY 1, 2
-          ORDER BY 1, 2
+          GROUP BY 1
+          ORDER BY 1
           """).display()
 
 # COMMAND ----------
@@ -234,11 +244,10 @@ with mlflow.start_run() as run:
 
   fe.log_model(
     model=model,
-    artifact_path="deltamodels_grouped_model",
+    artifact_path=conf.grouped_model_name,
     flavor=mlflow.pyfunc,
     training_set=training_set,
-    registered_model_name="temp.erni.deltamodels_grouped_model",
-    infer_input_example=True
+    registered_model_name=f"{conf.catalog}.{conf.schema}.{conf.grouped_model_name}"
   )
 
 # COMMAND ----------
@@ -251,8 +260,11 @@ with mlflow.start_run() as run:
 
 fe = FeatureEngineeringClient()
 
+# TODO: get the latest version or use an alias (eg. `prod`)
+model_version = "1"
+
 predictions = fe.score_batch(
-    model_uri="models:/temp.erni.deltamodels_grouped_model/16",
+    model_uri=f"models:/{conf.catalog}.{conf.schema}.{conf.grouped_model_name}/{model_version}",
     df=df.select("farm_code", "ent_code", "ts")
 )
 
