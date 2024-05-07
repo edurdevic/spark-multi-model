@@ -136,7 +136,7 @@ def my_fun(pdf: pd.DataFrame, run: mlflow.ActiveRun):
     model = regressor.fit(pdf[["a", "b", "c"]], pdf["target"])
     
     mlflow.log_metric("rmse", random.random())
-    mlflow.lightgbm.log_model(model, "model")
+    mlflow.lightgbm.log_model(model, "model") # This model has to be called "model"
     
     #### END YOUR CODE #####
 
@@ -151,6 +151,8 @@ with mlflow.start_run() as parent_run:
     target_table = f"{conf.catalog}.{conf.schema}.{conf.model_table}"
 
     mlflow.log_param("target_table", target_table)
+    
+    mlflow.log_input(mlflow.data.from_spark(training_df), "training_spark_df")
 
     #### END YOUR CODE #####
 
@@ -248,7 +250,7 @@ with mlflow.start_run() as run:
     artifact_path=conf.grouped_model_name,
     flavor=mlflow.pyfunc,
     training_set=training_set,
-    registered_model_name=f"{conf.registered_model_name}"
+    registered_model_name=conf.registered_model_name
   )
 
 # COMMAND ----------
