@@ -6,6 +6,12 @@
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC We will train and serve multiple models simultaneously, one for each wind turbine.
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Configuration
 
 # COMMAND ----------
@@ -85,7 +91,7 @@ feature_table = fe.create_table(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Feature lookup and training
+# MAGIC ## Feature lookup and training set
 
 # COMMAND ----------
 
