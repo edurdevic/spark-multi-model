@@ -3,7 +3,6 @@ from functools import partial
 from pyspark.sql.window import Window
 import random
 import pandas as pd
-import dill
 import json
 import mlflow
 
@@ -86,14 +85,11 @@ def _apply_grouped_training(f, parent_run_id, group_key, pdf):
     result = None
 
     with mlflow.start_run(run_id=parent_run_id) as parent_run:
-        with mlflow.start_run(run_name=f"group_key: {group_key}", nested=True) as run:
+        with mlflow.start_run(run_name=f"group {group_key}", nested=True) as run:
             try:  
                 mlflow.log_param("group_key", group_key)
                 mlflow.log_param("nested_run", "true")
                 mlflow.log_param("logged_model_name", "model")
-
-                pdf_input = mlflow.data.from_pandas(pdf, "training_df")
-                mlflow.log_input(pdf_input, "training_df")
                 
                 f(pdf, run)
             
@@ -111,6 +107,24 @@ def _apply_grouped_training(f, parent_run_id, group_key, pdf):
         result = pd.DataFrame(data=[[run_id, stringify_key_value(group_key), data, info, f'runs:/{run_id}/model', None]], columns=grouped_result_cols)
     
     return result
+  
+
+def grouped_prediction(model, feature_cols, id_cols):
+    return partial(_apply_grouped_prediction, model, feature_cols, id_cols)
+
+def _apply_grouped_prediction(model, feature_cols, id_cols, group_key, pdf):
+    import traceback
+    import mlflow
+
+    group_key_str = stringify_key_value(group_key)
+    
+    result = model.predict(pdf[feature_cols])
+
+    result_df = pdf[id_cols]
+    result_df["group_key"] = group_key_str
+    result_df["prediction"] = result
+    
+    return result_df
 
 def get_latest_model_version(model_name):
     """Gets the latest version of a registered model"""

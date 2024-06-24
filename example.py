@@ -6,7 +6,13 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC We will train and serve multiple models simultaneously, one for each wind turbine.
+# MAGIC This notebook shows how to run training, logging and inference of multiple models in parallel.
+# MAGIC
+# MAGIC It starts from a dataset of wind turbine data, and it trains one regression model for each wind turbine.
+# MAGIC
+# MAGIC ## Requirements
+# MAGIC
+# MAGIC * Use an assigned cluster with DBR 14.3 ML LTS
 # MAGIC
 
 # COMMAND ----------
@@ -18,7 +24,7 @@
 
 # DBTITLE 1,Python Data Processing Libraries
 from pyspark.sql import functions as F
-from deltamodels import dm
+from multimodel import mm
 from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup
 import random
 import pandas as pd
@@ -27,13 +33,14 @@ import mlflow
 # COMMAND ----------
 
 # DBTITLE 1,Date Range Widget Getter
+# TODO: Change the configuration according to your needs
 
 class Conf:
-    catalog = "temp"
-    schema = "erni"
-    model_table = "delta_models_v1"
+    catalog = "erni"
+    schema = "multimodels"
+    model_table = "multi_models_tracking"
     grouped_model_name = "windfarm_grouped_model"
-    feature_table = "windfarm_features_v1"
+    feature_table = "windfarm_features"
     registered_model_name=f"{catalog}.{schema}.{grouped_model_name}"
 
 conf = Conf()
@@ -42,7 +49,10 @@ conf = Conf()
 
 # DBTITLE 1,Adaptive Query Configuration Disable
 # Disabling AQE to always have 200 concurrent tasks. 
-# AQE would coalesce to 1 task for small dataframes
+# AQE would coalesce to 1 task for small dataframes, 
+# but we want to paralelise the training of each model 
+# across multiple tasks
+
 spark.conf.set("spark.sql.adaptive.enabled", "false")
 
 # COMMAND ----------
@@ -55,16 +65,16 @@ spark.conf.set("spark.sql.adaptive.enabled", "false")
 
 # DBTITLE 1,Randomized Entity Farm Data Generator
 df = (spark.range(1000)
-    .withColumn("ent_code", F.concat(F.lit("ent_"), (F.rand(seed=5)*3).cast("int").cast("string")))
-    .withColumn("farm_code", F.concat(F.lit("farm_"), (F.rand(seed=1000)*3).cast("int").cast("string")))
-
-    # NOTE: there must be a column called "group_key" to distinguish training groups
-    .withColumn("group_key", F.concat(F.col("ent_code"), F.lit("_"), F.col("farm_code")))
+    .withColumn("turbine_id", F.concat(F.lit("turbine_"), (F.rand(seed=5)*3).cast("int").cast("string")))
+    
+    # NOTE: there must be a column called "group_key" to distinguish the training groups
+    .withColumn("group_key", F.col("turbine_id"))
     .withColumn("ts", F.col("id").cast("timestamp"))
     .withColumn("a", F.rand(seed=1)*10)
     .withColumn("b", F.rand(seed=2)*10)
     .withColumn("c", F.rand(seed=3)*10)
     .withColumn("target", F.rand(seed=2)*100)
+    .drop("id")
 )
 
 display(df)
@@ -77,12 +87,17 @@ display(df)
 
 # COMMAND ----------
 
+spark.sql(f"CREATE CATALOG IF NOT EXISTS {conf.catalog}")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {conf.catalog}.{conf.schema}")
+
+# COMMAND ----------
+
 fe = FeatureEngineeringClient()
 
 # Creating the feature engineering table
 feature_table = fe.create_table(
   name=f'{conf.catalog}.{conf.schema}.{conf.feature_table}',
-  primary_keys=["ent_code", "farm_code", "ts"],
+  primary_keys=["turbine_id", "ts"],
   timeseries_columns='ts',
   df=df.drop("target"),
   description='Wind turbine features'
@@ -91,7 +106,7 @@ feature_table = fe.create_table(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Feature lookup and training set
+# MAGIC ## Feature lookup and training
 
 # COMMAND ----------
 
@@ -100,7 +115,7 @@ feature_lookups = [
       table_name=f'{conf.catalog}.{conf.schema}.{conf.feature_table}',
       # 'group_key' is a feature because it is used to switch between models
       feature_names=['group_key', 'a', 'b', 'c'],
-      lookup_key=["ent_code", "farm_code"],
+      lookup_key=["turbine_id"],
       timestamp_lookup_key=["ts"]
     )
   ]
@@ -108,7 +123,7 @@ feature_lookups = [
 fe = FeatureEngineeringClient()
 
 training_set = fe.create_training_set(
-        df=df.select("ent_code", "farm_code", "ts", "target"),
+        df=df.select("turbine_id", "ts", "target"),
         feature_lookups = feature_lookups,
         label = 'target',
         exclude_columns = ['id']
@@ -142,7 +157,7 @@ def my_fun(pdf: pd.DataFrame, run: mlflow.ActiveRun):
     model = regressor.fit(pdf[["a", "b", "c"]], pdf["target"])
     
     mlflow.log_metric("rmse", random.random())
-    mlflow.lightgbm.log_model(model, "model") # This model has to be called "model"
+    mlflow.lightgbm.log_model(model, "model")
     
     #### END YOUR CODE #####
 
@@ -157,12 +172,10 @@ with mlflow.start_run() as parent_run:
     target_table = f"{conf.catalog}.{conf.schema}.{conf.model_table}"
 
     mlflow.log_param("target_table", target_table)
-    
-    mlflow.log_input(mlflow.data.from_spark(training_df), "training_spark_df")
 
     #### END YOUR CODE #####
 
-    dm.train_in_parallel(
+    mm.train_in_parallel(
         df=training_df, # This dataset must contain a "group_key" column
         f=my_fun, # This function will be executed for each group_key
         parent_run=parent_run,
@@ -216,7 +229,7 @@ spark.sql(f"""
 spark.sql(f"""
           SELECT *
           FROM {conf.catalog}.{conf.schema}.{conf.model_table}
-          WHERE group_key = 'ent_1_farm_0'
+          WHERE group_key = 'turbine_1'
           ORDER BY ts DESC
           """).display()
 
@@ -230,7 +243,7 @@ spark.sql(f"""
 # DBTITLE 1,Metric Data Stream Filter
 
 all_models = spark.read.table(f"{conf.catalog}.{conf.schema}.{conf.model_table}")
-best_models = dm.get_best_model(all_models, metric="rmse")
+best_models = mm.get_best_model(all_models, metric="rmse")
 
 best_models.display()
 
@@ -256,7 +269,7 @@ with mlflow.start_run() as run:
     artifact_path=conf.grouped_model_name,
     flavor=mlflow.pyfunc,
     training_set=training_set,
-    registered_model_name=conf.registered_model_name
+    registered_model_name=f"{conf.registered_model_name}"
   )
 
 # COMMAND ----------
@@ -270,12 +283,12 @@ with mlflow.start_run() as run:
 fe = FeatureEngineeringClient()
 
 # TODO: get the latest version or use an alias (eg. `prod`)
-model_version = dm.get_latest_model_version(conf.registered_model_name)
+model_version = mm.get_latest_model_version(conf.registered_model_name)
 print(f"Loading model version {model_version}")
 
 predictions = fe.score_batch(
     model_uri=f"models:/{conf.registered_model_name}/{model_version}",
-    df=df.select("farm_code", "ent_code", "ts")
+    df=df.select("turbine_id", "ts")
 )
 
 # COMMAND ----------
