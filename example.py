@@ -22,14 +22,9 @@
 
 # COMMAND ----------
 
-# %pip install mlflow databricks-sdk lightgbm[pandas]
-# dbutils.library.restartPython()
-
-# COMMAND ----------
-
 # DBTITLE 1,Python Data Processing Libraries
 from pyspark.sql import functions as F
-from deltamodels import dm
+from multimodel import mm
 from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup
 import random
 import pandas as pd
@@ -38,13 +33,14 @@ import mlflow
 # COMMAND ----------
 
 # DBTITLE 1,Date Range Widget Getter
+# TODO: Change the configuration according to your needs
 
 class Conf:
     catalog = "erni"
     schema = "multimodels"
-    model_table = "delta_models_v2"
+    model_table = "multi_models_tracking"
     grouped_model_name = "windfarm_grouped_model"
-    feature_table = "windfarm_features_v2"
+    feature_table = "windfarm_features"
     registered_model_name=f"{catalog}.{schema}.{grouped_model_name}"
 
 conf = Conf()
@@ -53,8 +49,11 @@ conf = Conf()
 
 # DBTITLE 1,Adaptive Query Configuration Disable
 # Disabling AQE to always have 200 concurrent tasks. 
-# AQE would coalesce to 1 task for small dataframes
-# spark.conf.set("spark.sql.adaptive.enabled", "false")
+# AQE would coalesce to 1 task for small dataframes, 
+# but we want to paralelise the training of each model 
+# across multiple tasks
+
+spark.conf.set("spark.sql.adaptive.enabled", "false")
 
 # COMMAND ----------
 
@@ -68,7 +67,7 @@ conf = Conf()
 df = (spark.range(1000)
     .withColumn("turbine_id", F.concat(F.lit("turbine_"), (F.rand(seed=5)*3).cast("int").cast("string")))
     
-    # NOTE: there must be a column called "group_key" to distinguish training groups
+    # NOTE: there must be a column called "group_key" to distinguish the training groups
     .withColumn("group_key", F.col("turbine_id"))
     .withColumn("ts", F.col("id").cast("timestamp"))
     .withColumn("a", F.rand(seed=1)*10)
@@ -176,7 +175,7 @@ with mlflow.start_run() as parent_run:
 
     #### END YOUR CODE #####
 
-    dm.train_in_parallel(
+    mm.train_in_parallel(
         df=training_df, # This dataset must contain a "group_key" column
         f=my_fun, # This function will be executed for each group_key
         parent_run=parent_run,
@@ -244,7 +243,7 @@ spark.sql(f"""
 # DBTITLE 1,Metric Data Stream Filter
 
 all_models = spark.read.table(f"{conf.catalog}.{conf.schema}.{conf.model_table}")
-best_models = dm.get_best_model(all_models, metric="rmse")
+best_models = mm.get_best_model(all_models, metric="rmse")
 
 best_models.display()
 
@@ -284,7 +283,7 @@ with mlflow.start_run() as run:
 fe = FeatureEngineeringClient()
 
 # TODO: get the latest version or use an alias (eg. `prod`)
-model_version = dm.get_latest_model_version(conf.registered_model_name)
+model_version = mm.get_latest_model_version(conf.registered_model_name)
 print(f"Loading model version {model_version}")
 
 predictions = fe.score_batch(
